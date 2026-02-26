@@ -1,0 +1,1075 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+
+const ANTHROPIC_API_KEY_PLACEHOLDER = ""; // Uses proxy
+
+// ─── Palette ───────────────────────────────────────────────────────────────
+const theme = {
+  bg: "#0a0e1a",
+  surface: "#111827",
+  card: "#1a2235",
+  accent: "#38bdf8",
+  accent2: "#818cf8",
+  accent3: "#34d399",
+  warn: "#f59e0b",
+  danger: "#f87171",
+  text: "#f1f5f9",
+  muted: "#64748b",
+  border: "#1e2d40",
+};
+
+const G = {
+  fontDisplay: "'Sora', sans-serif",
+  fontBody: "'DM Sans', sans-serif",
+  fontMono: "'JetBrains Mono', monospace",
+};
+
+// ─── Global Styles ──────────────────────────────────────────────────────────
+const globalCSS = `
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: ${theme.bg};
+  color: ${theme.text};
+  font-family: ${G.fontBody};
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: ${theme.bg}; }
+::-webkit-scrollbar-thumb { background: ${theme.border}; border-radius: 2px; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 20px ${theme.accent}33; }
+  50% { box-shadow: 0 0 40px ${theme.accent}66; }
+}
+
+.fade-up { animation: fadeUp 0.4s ease forwards; }
+.fade-up-2 { animation: fadeUp 0.4s ease 0.1s forwards; opacity: 0; }
+.fade-up-3 { animation: fadeUp 0.4s ease 0.2s forwards; opacity: 0; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: ${G.fontBody};
+  font-weight: 600;
+  font-size: 14px;
+  padding: 10px 20px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.01em;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn-primary {
+  background: linear-gradient(135deg, ${theme.accent}, ${theme.accent2});
+  color: #fff;
+}
+.btn-primary:hover { box-shadow: 0 8px 24px ${theme.accent}44; }
+.btn-ghost {
+  background: transparent;
+  color: ${theme.muted};
+  border: 1px solid ${theme.border};
+}
+.btn-ghost:hover { border-color: ${theme.accent}; color: ${theme.accent}; }
+.btn-success {
+  background: ${theme.accent3};
+  color: #0a0e1a;
+}
+.btn-danger {
+  background: ${theme.danger};
+  color: #fff;
+}
+.btn-lg { padding: 14px 28px; font-size: 16px; border-radius: 14px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+.card {
+  background: ${theme.card};
+  border: 1px solid ${theme.border};
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ${G.fontMono};
+}
+.badge-blue { background: ${theme.accent}22; color: ${theme.accent}; border: 1px solid ${theme.accent}33; }
+.badge-green { background: ${theme.accent3}22; color: ${theme.accent3}; border: 1px solid ${theme.accent3}33; }
+.badge-warn { background: ${theme.warn}22; color: ${theme.warn}; border: 1px solid ${theme.warn}33; }
+.badge-muted { background: ${theme.muted}22; color: ${theme.muted}; border: 1px solid ${theme.muted}33; }
+
+.input {
+  width: 100%;
+  background: ${theme.surface};
+  border: 1px solid ${theme.border};
+  border-radius: 10px;
+  padding: 12px 16px;
+  color: ${theme.text};
+  font-family: ${G.fontBody};
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.input:focus { border-color: ${theme.accent}; }
+.input::placeholder { color: ${theme.muted}; }
+
+.divider {
+  height: 1px;
+  background: ${theme.border};
+  margin: 20px 0;
+}
+
+.loader {
+  width: 20px; height: 20px;
+  border: 2px solid ${theme.border};
+  border-top-color: ${theme.accent};
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+`;
+
+// ─── Storage Helpers ─────────────────────────────────────────────────────────
+const storage = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
+};
+
+const today = () => new Date().toISOString().split("T")[0];
+
+// ─── Claude API ───────────────────────────────────────────────────────────────
+async function callClaude(prompt) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const data = await res.json();
+  return data.content?.[0]?.text || "";
+}
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+const Icon = ({ name, size = 16 }) => {
+  const icons = {
+    home: "M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z M9 22V12h6v10",
+    plus: "M12 5v14M5 12h14",
+    book: "M4 19.5A2.5 2.5 0 016.5 17H20 M4 4h16v17H6.5A2.5 2.5 0 014 18.5z",
+    star: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z",
+    settings: "M12 15a3 3 0 100-6 3 3 0 000 6z M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z",
+    check: "M20 6L9 17l-5-5",
+    x: "M18 6L6 18M6 6l12 12",
+    brain: "M12 2a4 4 0 014 4 4 4 0 01-4 4 4 4 0 01-4-4 4 4 0 014-4m0 10c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4z",
+    trophy: "M6 9H2V2h4m12 7h4V2h-4M6 9a6 6 0 0012 0M6 9H2m16 0h4M12 21v-6m0 0a4 4 0 01-4-4m4 4a4 4 0 004-4m-8 7h8",
+    bell: "M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0",
+    trending: "M23 6l-9.5 9.5-5-5L1 18",
+    eye: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 100 6 3 3 0 000-6z",
+    lock: "M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2z M7 11V7a5 5 0 0110 0v4",
+    zap: "M13 2L3 14h9l-1 8 10-12h-9l1-8z",
+    refresh: "M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+    arrow_right: "M5 12h14M12 5l7 7-7 7",
+    calendar: "M3 4h18v18H3z M16 2v4M8 2v4M3 10h18",
+    chart: "M18 20V10M12 20V4M6 20v-6",
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {icons[name]?.split(" ").map((d, i) => <path key={i} d={d} />)}
+    </svg>
+  );
+};
+
+// ─── Progress Ring ────────────────────────────────────────────────────────────
+const ProgressRing = ({ pct, size = 60, stroke = 4, color = theme.accent }) => {
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={theme.border} strokeWidth={stroke} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={stroke}
+        strokeDasharray={circ} strokeDashoffset={circ * (1 - pct / 100)}
+        strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+      <text x={size/2} y={size/2} textAnchor="middle" dominantBaseline="central"
+        fill={theme.text} fontSize={size/4} fontFamily={G.fontMono}
+        style={{ transform: "rotate(90deg)", transformOrigin: `${size/2}px ${size/2}px` }}>
+        {pct}%
+      </text>
+    </svg>
+  );
+};
+
+// ─── Screens ──────────────────────────────────────────────────────────────────
+
+// WELCOME
+function WelcomeScreen({ onLogin }) {
+  const [mode, setMode] = useState("main"); // main | login | register
+  const [form, setForm] = useState({ name: "", email: "", pass: "" });
+  const [err, setErr] = useState("");
+
+  const handleLogin = () => {
+    const users = storage.get("users") || {};
+    if (!users[form.email] || users[form.email].pass !== form.pass) return setErr("البريد أو كلمة المرور غلط");
+    onLogin(users[form.email]);
+  };
+  const handleRegister = () => {
+    if (!form.name || !form.email || !form.pass) return setErr("أكمل جميع الحقول");
+    const users = storage.get("users") || {};
+    if (users[form.email]) return setErr("هذا البريد مسجل مسبقاً");
+    const user = { name: form.name, email: form.email, pass: form.pass, joined: today() };
+    users[form.email] = user;
+    storage.set("users", users);
+    onLogin(user);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: `radial-gradient(ellipse at 60% 0%, ${theme.accent}0d 0%, transparent 60%), radial-gradient(ellipse at 20% 100%, ${theme.accent2}0d 0%, transparent 60%), ${theme.bg}` }}>
+      {/* Logo */}
+      <div className="fade-up" style={{ textAlign: "center", marginBottom: 48 }}>
+        <div style={{ width: 80, height: 80, borderRadius: 24, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", boxShadow: `0 0 40px ${theme.accent}44`, animation: "glow 3s ease infinite" }}>
+          <Icon name="zap" size={36} />
+        </div>
+        <h1 style={{ fontFamily: G.fontDisplay, fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 8 }}>
+          Smart English<br /><span style={{ color: theme.accent }}>Builder</span>
+        </h1>
+        <p style={{ color: theme.muted, fontSize: 15, maxWidth: 280, margin: "0 auto" }}>
+          تعلم كلمات جديدة كل يوم بطريقة ذكية
+        </p>
+      </div>
+
+      {mode === "main" && (
+        <div className="fade-up-2" style={{ width: "100%", maxWidth: 340, display: "flex", flexDirection: "column", gap: 12 }}>
+          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setMode("login")}>
+            <Icon name="arrow_right" size={18} /> تسجيل الدخول
+          </button>
+          <button className="btn btn-ghost btn-lg" style={{ width: "100%" }} onClick={() => setMode("register")}>
+            <Icon name="plus" size={18} /> حساب جديد
+          </button>
+        </div>
+      )}
+
+      {(mode === "login" || mode === "register") && (
+        <div className="fade-up-2 card" style={{ width: "100%", maxWidth: 360 }}>
+          <h2 style={{ fontFamily: G.fontDisplay, fontSize: 20, fontWeight: 700, marginBottom: 20 }}>
+            {mode === "login" ? "تسجيل الدخول" : "إنشاء حساب جديد"}
+          </h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {mode === "register" && (
+              <input className="input" placeholder="الاسم" value={form.name} onChange={e => setForm(p => ({...p, name: e.target.value}))} />
+            )}
+            <input className="input" placeholder="البريد الإلكتروني" type="email" value={form.email} onChange={e => setForm(p => ({...p, email: e.target.value}))} />
+            <input className="input" placeholder="كلمة المرور" type="password" value={form.pass} onChange={e => setForm(p => ({...p, pass: e.target.value}))} />
+            {err && <p style={{ color: theme.danger, fontSize: 13 }}>{err}</p>}
+            <button className="btn btn-primary" style={{ marginTop: 4 }} onClick={mode === "login" ? handleLogin : handleRegister}>
+              {mode === "login" ? "دخول" : "إنشاء الحساب"}
+            </button>
+            <button className="btn btn-ghost" onClick={() => { setMode("main"); setErr(""); }}>رجوع</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// DASHBOARD
+function Dashboard({ user, words, todayReviewed, onNav, onInstall }) {
+  const todayWords = words.filter(w => w.date === today());
+  const allReviewed = words.filter(w => w.date !== today() && w.needsReview);
+  const weekData = Array.from({length: 7}, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    const ds = d.toISOString().split("T")[0];
+    return { label: ["أحد","إث","ثل","أر","خم","جم","سب"][d.getDay()], count: words.filter(w => w.date === ds).length };
+  });
+  const maxCount = Math.max(...weekData.map(d => d.count), 1);
+
+  return (
+    <div className="fade-up" style={{ padding: "0 0 100px" }}>
+      {/* Header */}
+      <div style={{ padding: "28px 20px 0", background: `linear-gradient(180deg, ${theme.surface} 0%, transparent 100%)`, marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <p style={{ color: theme.muted, fontSize: 13, marginBottom: 4 }}>مرحباً بك،</p>
+            <h1 style={{ fontFamily: G.fontDisplay, fontSize: 24, fontWeight: 800 }}>{user.name} 👋</h1>
+            <p style={{ color: theme.muted, fontSize: 13, marginTop: 4 }}>{new Date().toLocaleDateString("ar-SA", { weekday: "long", day: "numeric", month: "long" })}</p>
+          </div>
+          <button onClick={onInstall} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: `linear-gradient(135deg, ${theme.accent}22, ${theme.accent2}11)`, border: `1px solid ${theme.accent}44`, borderRadius: 14, padding: "10px 14px", cursor: "pointer", color: theme.accent, transition: "all 0.2s" }}>
+            <Icon name="plus" size={20} />
+            <span style={{ fontSize: 10, fontFamily: G.fontBody, fontWeight: 600, whiteSpace: "nowrap" }}>تثبيت</span>
+          </button>
+        </div>
+      </div>
+
+      <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Stats row */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          {[
+            { label: "كلمات اليوم", val: todayWords.length, icon: "zap", color: theme.accent },
+            { label: "مراجعة اليوم", val: todayReviewed ? "✓" : "✗", icon: "refresh", color: todayReviewed ? theme.accent3 : theme.danger },
+            { label: "المجموع", val: words.length, icon: "book", color: theme.accent2 },
+          ].map(s => (
+            <div key={s.label} className="card" style={{ padding: 16, textAlign: "center" }}>
+              <div style={{ color: s.color, marginBottom: 8 }}><Icon name={s.icon} size={20} /></div>
+              <div style={{ fontFamily: G.fontMono, fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: theme.muted, marginTop: 4 }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Review status */}
+        {!todayReviewed && words.some(w => w.date !== today()) && (
+          <div className="card" style={{ background: `${theme.warn}11`, border: `1px solid ${theme.warn}33`, cursor: "pointer" }} onClick={() => onNav("review")}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: `${theme.warn}22`, display: "flex", alignItems: "center", justifyContent: "center", color: theme.warn, flexShrink: 0 }}>
+                <Icon name="bell" size={20} />
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, color: theme.warn, marginBottom: 2 }}>المراجعة اليومية مطلوبة</div>
+                <div style={{ fontSize: 13, color: theme.muted }}>أكمل المراجعة لفتح إضافة كلمات جديدة</div>
+              </div>
+              <Icon name="arrow_right" size={16} />
+            </div>
+          </div>
+        )}
+
+        {/* Quick actions */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <button className="card" style={{ border: "none", cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 12, background: `linear-gradient(135deg, ${theme.accent}22, ${theme.accent2}11)`, borderColor: `${theme.accent}33` }} onClick={() => onNav("add")}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Icon name="plus" size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontFamily: G.fontDisplay, fontSize: 15 }}>إضافة كلمات</div>
+              <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>5-10 كلمات يومياً</div>
+            </div>
+          </button>
+          <button className="card" style={{ border: "none", cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 12 }} onClick={() => onNav("review")}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: `${theme.accent3}22`, display: "flex", alignItems: "center", justifyContent: "center", color: theme.accent3 }}>
+              <Icon name="refresh" size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontFamily: G.fontDisplay, fontSize: 15 }}>المراجعة</div>
+              <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>راجع ما تعلمته</div>
+            </div>
+          </button>
+          <button className="card" style={{ border: "none", cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 12 }} onClick={() => onNav("history")}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: `${theme.accent2}22`, display: "flex", alignItems: "center", justifyContent: "center", color: theme.accent2 }}>
+              <Icon name="book" size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontFamily: G.fontDisplay, fontSize: 15 }}>سجل الكلمات</div>
+              <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>{words.length} كلمة</div>
+            </div>
+          </button>
+          <button className="card" style={{ border: "none", cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 12 }} onClick={() => onNav("settings")}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: `${theme.muted}22`, display: "flex", alignItems: "center", justifyContent: "center", color: theme.muted }}>
+              <Icon name="settings" size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontFamily: G.fontDisplay, fontSize: 15 }}>الإعدادات</div>
+              <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>تخصيص التطبيق</div>
+            </div>
+          </button>
+        </div>
+
+        {/* Weekly chart */}
+        <div className="card">
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <Icon name="chart" size={16} />
+            <span style={{ fontWeight: 600, fontSize: 14 }}>نشاط الأسبوع</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 80 }}>
+            {weekData.map((d, i) => (
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                <div style={{ width: "100%", height: `${Math.max(4, (d.count / maxCount) * 60)}px`, background: d.count ? `linear-gradient(180deg, ${theme.accent}, ${theme.accent2})` : theme.border, borderRadius: 6, transition: "height 0.6s ease" }} />
+                <span style={{ fontSize: 11, color: theme.muted }}>{d.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ADD WORDS
+function AddWords({ words, todayReviewed, onSave, onNav }) {
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [stage, setStage] = useState("quiz"); // quiz | reading | done
+  const [qIdx, setQIdx] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [showResult, setShowResult] = useState(false);
+
+  const canAdd = todayReviewed || !words.some(w => w.date !== today());
+
+  const generate = async () => {
+    const ws = input.split(/[\n,،]+/).map(w => w.trim()).filter(Boolean);
+    if (ws.length < 2) return alert("أدخل على الأقل كلمتين");
+    if (ws.length > 10) return alert("الحد الأقصى 10 كلمات");
+    setLoading(true);
+    setResult(null);
+
+    const prompt = `You are an English teacher creating a learning session. Given these English words: ${ws.join(", ")}
+
+Return ONLY a JSON object with this exact structure (no other text):
+{
+  "words": [{"word": "...", "meaning_ar": "...", "example": "..."}],
+  "passage": "A short 80-100 word passage using all the words naturally",
+  "passage_ar": "Arabic translation of the passage",
+  "questions": [
+    {"type": "truefalse", "question": "...", "answer": true},
+    {"type": "truefalse", "question": "...", "answer": false},
+    {"type": "mcq", "question": "...", "options": ["a","b","c","d"], "answer": 0},
+    {"type": "mcq", "question": "...", "options": ["a","b","c","d"], "answer": 1},
+    {"type": "order", "words": ["word1","word2","word3","word4"], "sentence": "correct sentence"}
+  ]
+}`;
+
+    try {
+      const text = await callClaude(prompt);
+      const clean = text.replace(/```json|```/g, "").trim();
+      const data = JSON.parse(clean);
+      setResult(data);
+      setStage("reading");
+    } catch (e) {
+      alert("حدث خطأ في توليد المحتوى. حاول مرة أخرى.");
+    }
+    setLoading(false);
+  };
+
+  const saveWords = () => {
+    if (!result) return;
+    const score = calculateScore();
+    const newWords = result.words.map(w => ({
+      ...w, date: today(), score, needsReview: score < 70,
+      id: Date.now() + Math.random(), passage: result.passage, passage_ar: result.passage_ar
+    }));
+    onSave(newWords);
+    setInput(""); setResult(null); setStage("quiz"); setAnswers({});
+  };
+
+  const calculateScore = () => {
+    if (!result) return 0;
+    let correct = 0, total = result.questions.length;
+    result.questions.forEach((q, i) => {
+      if (q.type === "truefalse" && answers[i] === q.answer) correct++;
+      if (q.type === "mcq" && answers[i] === q.answer) correct++;
+      if (q.type === "order" && answers[i] === q.sentence) correct++;
+    });
+    return Math.round((correct / total) * 100);
+  };
+
+  if (!canAdd) return (
+    <div style={{ padding: 20 }}>
+      <h2 style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 8 }}>إضافة كلمات</h2>
+      <div className="card" style={{ background: `${theme.warn}11`, border: `1px solid ${theme.warn}33`, textAlign: "center", padding: 40 }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
+        <h3 style={{ fontWeight: 700, color: theme.warn, marginBottom: 8 }}>أكمل المراجعة أولاً</h3>
+        <p style={{ color: theme.muted, marginBottom: 20 }}>يجب مراجعة كلمات اليوم السابق قبل إضافة كلمات جديدة</p>
+        <button className="btn btn-primary" onClick={() => onNav("review")}>اذهب للمراجعة</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "0 16px 100px" }}>
+      <h2 className="fade-up" style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 20, paddingTop: 20 }}>إضافة كلمات جديدة</h2>
+
+      {!result && (
+        <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <label style={{ fontSize: 13, color: theme.muted, display: "block", marginBottom: 10 }}>أدخل الكلمات (5-10 كلمات، كل كلمة في سطر أو مفصولة بفاصلة)</label>
+            <textarea className="input" placeholder={"adventure\ncuriosity\npersistence\nempathy\ncritical"} rows={6} value={input} onChange={e => setInput(e.target.value)} style={{ resize: "none" }} />
+            <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: theme.muted }}>{input.split(/[\n,،]+/).filter(w => w.trim()).length} كلمة</span>
+              <button className="btn btn-primary" onClick={generate} disabled={loading || !input.trim()}>
+                {loading ? <><div className="loader" /><span>جاري الإنشاء...</span></> : <><Icon name="zap" size={14} /> إنشاء قطعة</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {result && stage === "reading" && (
+        <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ fontWeight: 700 }}>الكلمات الجديدة</h3>
+              <span className="badge badge-blue">{result.words.length} كلمة</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {result.words.map((w, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "10px 12px", background: theme.surface, borderRadius: 10, gap: 12 }}>
+                  <div>
+                    <div style={{ fontFamily: G.fontMono, fontWeight: 600, color: theme.accent }}>{w.word}</div>
+                    <div style={{ fontSize: 12, color: theme.muted, marginTop: 4 }}>{w.example}</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: theme.accent3, whiteSpace: "nowrap", fontWeight: 500 }}>{w.meaning_ar}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 style={{ fontWeight: 700, marginBottom: 12 }}>القطعة</h3>
+            <p style={{ lineHeight: 1.8, color: theme.text, fontFamily: G.fontBody }}>{result.passage}</p>
+            <div className="divider" />
+            <p style={{ lineHeight: 1.8, color: theme.muted, fontSize: 14, direction: "rtl" }}>{result.passage_ar}</p>
+          </div>
+
+          <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => { setStage("quiz"); setQIdx(0); setAnswers({}); setShowResult(false); }}>
+            <Icon name="zap" size={14} /> ابدأ اختبار الفهم
+          </button>
+        </div>
+      )}
+
+      {result && stage === "quiz" && result.questions && (
+        <Quiz questions={result.questions} onFinish={(ans) => { setAnswers(ans); setShowResult(true); setStage("done"); }} />
+      )}
+
+      {result && stage === "done" && (
+        <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card" style={{ textAlign: "center", padding: 40 }}>
+            <div style={{ fontSize: 56, marginBottom: 16 }}>{calculateScore() >= 70 ? "🎉" : "📚"}</div>
+            <h3 style={{ fontFamily: G.fontDisplay, fontSize: 24, fontWeight: 800, marginBottom: 8 }}>نتيجتك: {calculateScore()}%</h3>
+            <p style={{ color: theme.muted }}>{calculateScore() >= 70 ? "ممتاز! أتقنت هذه الكلمات" : "تحتاج مزيداً من المراجعة"}</p>
+          </div>
+          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={saveWords}>
+            <Icon name="check" size={16} /> حفظ الكلمات
+          </button>
+          <button className="btn btn-ghost" style={{ width: "100%" }} onClick={() => setStage("reading")}>
+            العودة للقطعة
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// QUIZ COMPONENT
+function Quiz({ questions, onFinish }) {
+  const [qIdx, setQIdx] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [selected, setSelected] = useState(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [orderWords, setOrderWords] = useState([]);
+
+  const q = questions[qIdx];
+
+  useEffect(() => {
+    setSelected(null); setConfirmed(false);
+    if (q?.type === "order") setOrderWords([...q.words].sort(() => Math.random() - 0.5));
+  }, [qIdx]);
+
+  const confirm = () => {
+    const ans = q.type === "order" ? orderWords.join(" ") : selected;
+    setAnswers(p => ({...p, [qIdx]: ans}));
+    setConfirmed(true);
+  };
+
+  const next = () => {
+    if (qIdx < questions.length - 1) setQIdx(qIdx + 1);
+    else onFinish(answers);
+  };
+
+  const isCorrect = () => {
+    if (q.type === "truefalse") return answers[qIdx] === q.answer;
+    if (q.type === "mcq") return answers[qIdx] === q.answer;
+    if (q.type === "order") return answers[qIdx]?.toLowerCase().trim() === q.sentence?.toLowerCase().trim();
+    return false;
+  };
+
+  return (
+    <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Progress */}
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: theme.muted }}>السؤال {qIdx + 1} من {questions.length}</span>
+          <span style={{ fontSize: 13, fontFamily: G.fontMono, color: theme.accent }}>{Math.round((qIdx / questions.length) * 100)}%</span>
+        </div>
+        <div style={{ height: 4, background: theme.border, borderRadius: 2 }}>
+          <div style={{ height: "100%", width: `${((qIdx + 1) / questions.length) * 100}%`, background: `linear-gradient(90deg, ${theme.accent}, ${theme.accent2})`, borderRadius: 2, transition: "width 0.4s ease" }} />
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="badge badge-blue" style={{ marginBottom: 12 }}>
+          {q.type === "truefalse" ? "صح أو خطأ" : q.type === "mcq" ? "اختيار من متعدد" : "رتب الكلمات"}
+        </div>
+        <h3 style={{ fontFamily: G.fontDisplay, fontSize: 18, fontWeight: 700, marginBottom: 20, lineHeight: 1.5 }}>{q.question || (q.type === "order" && "رتب الكلمات لتكوّن جملة صحيحة")}</h3>
+
+        {q.type === "truefalse" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[true, false].map(v => (
+              <button key={String(v)} onClick={() => !confirmed && setSelected(v)}
+                style={{ padding: "16px", borderRadius: 12, border: `2px solid ${selected === v ? (v ? theme.accent3 : theme.danger) : theme.border}`, background: selected === v ? (v ? `${theme.accent3}22` : `${theme.danger}22`) : theme.surface, color: theme.text, cursor: "pointer", fontWeight: 600, fontSize: 18, transition: "all 0.2s" }}>
+                {v ? "✓ صح" : "✗ خطأ"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {q.type === "mcq" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {q.options.map((opt, i) => (
+              <button key={i} onClick={() => !confirmed && setSelected(i)}
+                style={{ padding: "12px 16px", borderRadius: 10, border: `2px solid ${selected === i ? theme.accent : theme.border}`, background: selected === i ? `${theme.accent}22` : theme.surface, color: theme.text, cursor: "pointer", textAlign: "left", transition: "all 0.2s", fontFamily: G.fontBody }}>
+                <span style={{ fontFamily: G.fontMono, color: theme.accent, marginRight: 8 }}>{String.fromCharCode(65 + i)}.</span> {opt}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {q.type === "order" && (
+          <div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+              {orderWords.map((w, i) => (
+                <button key={i} onClick={() => { if (!confirmed) { const arr = orderWords.filter((_, j) => j !== i); setOrderWords([...arr, w]); } }}
+                  style={{ padding: "8px 14px", borderRadius: 8, background: theme.surface, border: `1px solid ${theme.border}`, color: theme.text, cursor: "pointer", fontFamily: G.fontMono }}>
+                  {w}
+                </button>
+              ))}
+            </div>
+            <div style={{ minHeight: 44, padding: "10px 14px", borderRadius: 10, background: `${theme.accent}11`, border: `1px solid ${theme.accent}33`, fontFamily: G.fontMono, color: theme.accent }}>
+              {orderWords.join(" ") || "اضغط على الكلمات لرتيبها"}
+            </div>
+          </div>
+        )}
+
+        {confirmed && (
+          <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: isCorrect() ? `${theme.accent3}22` : `${theme.danger}22`, border: `1px solid ${isCorrect() ? theme.accent3 : theme.danger}33` }}>
+            <div style={{ fontWeight: 700, color: isCorrect() ? theme.accent3 : theme.danger, marginBottom: 4 }}>
+              {isCorrect() ? "✓ إجابة صحيحة!" : "✗ إجابة خاطئة"}
+            </div>
+            {!isCorrect() && q.type !== "order" && (
+              <div style={{ fontSize: 13, color: theme.muted }}>
+                الإجابة الصحيحة: {q.type === "truefalse" ? (q.answer ? "صح" : "خطأ") : q.options[q.answer]}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {!confirmed ? (
+        <button className="btn btn-primary btn-lg" style={{ width: "100%" }} disabled={selected === null && q.type !== "order"} onClick={confirm}>
+          تأكيد الإجابة
+        </button>
+      ) : (
+        <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={next}>
+          {qIdx < questions.length - 1 ? "السؤال التالي" : "عرض النتيجة"} <Icon name="arrow_right" size={16} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// REVIEW
+function ReviewScreen({ words, onComplete }) {
+  const reviewWords = words.filter(w => w.date !== today());
+  const [phase, setPhase] = useState("list"); // list | quiz | done
+  const [score, setScore] = useState(0);
+
+  if (reviewWords.length === 0) return (
+    <div style={{ padding: 20 }}>
+      <h2 style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 20, paddingTop: 4 }}>المراجعة اليومية</h2>
+      <div className="card" style={{ textAlign: "center", padding: 48 }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>🎓</div>
+        <h3 style={{ fontWeight: 700, marginBottom: 8 }}>لا توجد كلمات للمراجعة</h3>
+        <p style={{ color: theme.muted }}>ابدأ بإضافة كلمات جديدة أولاً</p>
+      </div>
+    </div>
+  );
+
+  const simpleQs = reviewWords.slice(0, 5).map(w => ({
+    type: "mcq",
+    question: `ما معنى كلمة "${w.word}"؟`,
+    options: [w.meaning_ar, "كلمة مختلفة", "معنى آخر", "غير محدد"],
+    answer: 0,
+  }));
+
+  return (
+    <div style={{ padding: "0 16px 100px" }}>
+      <h2 className="fade-up" style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 20, paddingTop: 20 }}>المراجعة اليومية</h2>
+
+      {phase === "list" && (
+        <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <h3 style={{ fontWeight: 700, marginBottom: 16 }}>كلمات اليوم السابق ({reviewWords.length})</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {reviewWords.map((w, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: theme.surface, borderRadius: 10 }}>
+                  <div>
+                    <span style={{ fontFamily: G.fontMono, color: theme.accent, fontWeight: 600 }}>{w.word}</span>
+                    {w.date && <span style={{ fontSize: 11, color: theme.muted, marginRight: 8 }}>{w.date}</span>}
+                  </div>
+                  <span style={{ color: theme.accent3, fontSize: 14, fontWeight: 500 }}>{w.meaning_ar}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setPhase("quiz")}>
+            <Icon name="zap" size={16} /> ابدأ اختبار المراجعة
+          </button>
+        </div>
+      )}
+
+      {phase === "quiz" && (
+        <Quiz questions={simpleQs} onFinish={(ans) => {
+          let correct = 0;
+          simpleQs.forEach((q, i) => { if (ans[i] === q.answer) correct++; });
+          setScore(Math.round((correct / simpleQs.length) * 100));
+          setPhase("done");
+        }} />
+      )}
+
+      {phase === "done" && (
+        <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card" style={{ textAlign: "center", padding: 40 }}>
+            <ProgressRing pct={score} size={100} stroke={6} color={score >= 70 ? theme.accent3 : theme.warn} />
+            <h3 style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginTop: 16, marginBottom: 8 }}>المراجعة مكتملة!</h3>
+            <p style={{ color: theme.muted }}>نتيجتك: {score}%</p>
+          </div>
+          <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={onComplete}>
+            <Icon name="check" size={16} /> تم — أضف كلمات جديدة
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// HISTORY
+function HistoryScreen({ words }) {
+  const [filter, setFilter] = useState("all");
+  const grouped = words.reduce((acc, w) => {
+    if (!acc[w.date]) acc[w.date] = [];
+    acc[w.date].push(w);
+    return acc;
+  }, {});
+  const dates = Object.keys(grouped).sort().reverse();
+
+  return (
+    <div style={{ padding: "0 16px 100px" }}>
+      <h2 className="fade-up" style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 20, paddingTop: 20 }}>سجل الكلمات</h2>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
+        {["all", "hard", "easy"].map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={`btn ${filter === f ? "btn-primary" : "btn-ghost"}`} style={{ whiteSpace: "nowrap" }}>
+            {f === "all" ? "الكل" : f === "hard" ? "صعبة" : "سهلة"}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {dates.map(date => (
+          <div key={date} className="card fade-up">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontFamily: G.fontMono, fontSize: 13, color: theme.accent }}>{date}</span>
+              <span className="badge badge-muted">{grouped[date].length} كلمة</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {grouped[date].map((w, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", background: theme.surface, borderRadius: 8 }}>
+                  <span style={{ fontFamily: G.fontMono, color: theme.text }}>{w.word}</span>
+                  <span style={{ color: theme.accent3, fontSize: 13 }}>{w.meaning_ar}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {dates.length === 0 && (
+          <div className="card" style={{ textAlign: "center", padding: 40 }}>
+            <p style={{ color: theme.muted }}>لا توجد كلمات مسجلة بعد</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// SETTINGS
+function SettingsScreen({ settings, onSave, user, onLogout }) {
+  const [s, setS] = useState(settings);
+  return (
+    <div style={{ padding: "0 16px 100px" }}>
+      <h2 className="fade-up" style={{ fontFamily: G.fontDisplay, fontSize: 22, fontWeight: 800, marginBottom: 20, paddingTop: 20 }}>الإعدادات</h2>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div className="card fade-up">
+          <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>الملف الشخصي</h3>
+          <div style={{ display: "flex", align: "center", gap: 16, padding: "12px 0" }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
+              {user.name?.[0]?.toUpperCase() || "U"}
+            </div>
+            <div>
+              <div style={{ fontWeight: 700 }}>{user.name}</div>
+              <div style={{ fontSize: 13, color: theme.muted }}>{user.email}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card fade-up-2">
+          <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>لغة الترجمة</h3>
+          <select className="input" value={s.lang} onChange={e => setS(p => ({...p, lang: e.target.value}))}>
+            <option value="ar">العربية</option>
+            <option value="fr">الفرنسية</option>
+            <option value="tr">التركية</option>
+          </select>
+        </div>
+
+        <div className="card fade-up-2">
+          <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>عدد الكلمات اليومية</h3>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[5, 7, 10].map(n => (
+              <button key={n} onClick={() => setS(p => ({...p, daily: n}))}
+                className={`btn ${s.daily === n ? "btn-primary" : "btn-ghost"}`} style={{ flex: 1 }}>
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => onSave(s)}>
+          حفظ الإعدادات
+        </button>
+        <button className="btn btn-ghost" style={{ width: "100%", color: theme.danger, borderColor: `${theme.danger}44` }} onClick={onLogout}>
+          تسجيل الخروج
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── INSTALL MODAL ───────────────────────────────────────────────────────────
+function InstallModal({ onClose }) {
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [installed, setInstalled] = useState(false);
+  const [tab, setTab] = useState("auto"); // auto | manual
+
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); setDeferredPrompt(e); };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  const handleInstall = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") { setInstalled(true); setTimeout(onClose, 1500); }
+      setDeferredPrompt(null);
+    }
+  };
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isAndroid = /android/i.test(navigator.userAgent);
+
+  const steps = {
+    ios: [
+      { icon: "1️⃣", text: 'اضغط على زر المشاركة', sub: "أيقونة السهم في أسفل Safari" },
+      { icon: "2️⃣", text: '"إضافة إلى الشاشة الرئيسية"', sub: "Add to Home Screen" },
+      { icon: "3️⃣", text: "اضغط إضافة", sub: "سيظهر التطبيق على الشاشة الرئيسية" },
+    ],
+    android: [
+      { icon: "1️⃣", text: "اضغط على قائمة المتصفح", sub: "النقاط الثلاث في أعلى يمين Chrome" },
+      { icon: "2️⃣", text: '"إضافة إلى الشاشة الرئيسية"', sub: "Add to Home Screen" },
+      { icon: "3️⃣", text: "اضغط إضافة", sub: "التطبيق سيُثبَّت فوراً" },
+    ],
+    desktop: [
+      { icon: "1️⃣", text: "انقر على أيقونة التثبيت", sub: "في شريط العنوان بـ Chrome أو Edge" },
+      { icon: "2️⃣", text: "اضغط تثبيت", sub: "Install في النافذة المنبثقة" },
+      { icon: "3️⃣", text: "التطبيق جاهز!", sub: "يفتح بدون متصفح" },
+    ],
+  };
+
+  const platform = isIOS ? "ios" : isAndroid ? "android" : "desktop";
+  const platformLabel = isIOS ? "iPhone / iPad" : isAndroid ? "Android" : "الكمبيوتر";
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000a", backdropFilter: "blur(8px)", zIndex: 1000, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: theme.card, borderRadius: "24px 24px 0 0", padding: 28, width: "100%", maxWidth: 480, border: `1px solid ${theme.border}`, borderBottom: "none", animation: "fadeUp 0.3s ease" }}>
+        {/* Handle */}
+        <div style={{ width: 40, height: 4, background: theme.border, borderRadius: 2, margin: "0 auto 24px" }} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
+          <div style={{ width: 52, height: 52, borderRadius: 16, background: `linear-gradient(135deg, ${theme.accent}, ${theme.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 24px ${theme.accent}44` }}>
+            <Icon name="zap" size={24} />
+          </div>
+          <div>
+            <h2 style={{ fontFamily: G.fontDisplay, fontSize: 20, fontWeight: 800 }}>تثبيت التطبيق</h2>
+            <p style={{ fontSize: 13, color: theme.muted, marginTop: 2 }}>Smart English Builder — {platformLabel}</p>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        {deferredPrompt && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            {["auto", "manual"].map(t => (
+              <button key={t} onClick={() => setTab(t)} className={`btn ${tab === t ? "btn-primary" : "btn-ghost"}`} style={{ flex: 1, fontSize: 13 }}>
+                {t === "auto" ? "⚡ تثبيت تلقائي" : "📖 دليل يدوي"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Auto install */}
+        {(tab === "auto" && deferredPrompt) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="card" style={{ background: `${theme.accent}11`, borderColor: `${theme.accent}33`, textAlign: "center", padding: 24 }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📲</div>
+              <p style={{ color: theme.muted, fontSize: 14, lineHeight: 1.6 }}>اضغط الزر أدناه لتثبيت التطبيق مباشرة على جهازك بدون متجر تطبيقات!</p>
+            </div>
+            {installed ? (
+              <div style={{ textAlign: "center", padding: 20, color: theme.accent3, fontWeight: 700, fontSize: 18 }}>✓ تم التثبيت بنجاح!</div>
+            ) : (
+              <button className="btn btn-primary btn-lg" style={{ width: "100%", animation: "glow 3s ease infinite" }} onClick={handleInstall}>
+                <Icon name="plus" size={18} /> ثبّت التطبيق الآن
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Manual steps */}
+        {(tab === "manual" || !deferredPrompt) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ fontSize: 13, color: theme.muted, marginBottom: 4 }}>اتبع هذه الخطوات لتثبيت التطبيق على {platformLabel}:</p>
+            {steps[platform].map((s, i) => (
+              <div key={i} style={{ display: "flex", gap: 14, alignItems: "flex-start", padding: "12px 14px", background: theme.surface, borderRadius: 12, border: `1px solid ${theme.border}` }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>{s.icon}</span>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{s.text}</div>
+                  <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>{s.sub}</div>
+                </div>
+              </div>
+            ))}
+
+            {/* Platform switcher */}
+            <div style={{ marginTop: 8 }}>
+              <p style={{ fontSize: 12, color: theme.muted, marginBottom: 8 }}>جهاز مختلف؟</p>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["ios","🍎 iPhone"],["android","🤖 Android"],["desktop","💻 كمبيوتر"]].map(([p, l]) => (
+                  <button key={p} onClick={() => {}} className="btn btn-ghost" style={{ flex: 1, fontSize: 11, padding: "8px 6px", opacity: platform === p ? 1 : 0.5 }}>{l}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button className="btn btn-ghost" style={{ width: "100%", marginTop: 16 }} onClick={onClose}>إغلاق</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── BOTTOM NAV ──────────────────────────────────────────────────────────────
+function BottomNav({ active, onNav }) {
+  const tabs = [
+    { id: "dashboard", icon: "home", label: "الرئيسية" },
+    { id: "add", icon: "plus", label: "إضافة" },
+    { id: "review", icon: "refresh", label: "مراجعة" },
+    { id: "history", icon: "book", label: "السجل" },
+    { id: "settings", icon: "settings", label: "إعدادات" },
+  ];
+  return (
+    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: `${theme.surface}ee`, backdropFilter: "blur(20px)", borderTop: `1px solid ${theme.border}`, display: "flex", zIndex: 100, maxWidth: 480, margin: "0 auto" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onNav(t.id)}
+          style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "10px 0 14px", background: "none", border: "none", cursor: "pointer", color: active === t.id ? theme.accent : theme.muted, transition: "color 0.2s" }}>
+          <div style={{ transform: active === t.id ? "scale(1.15)" : "scale(1)", transition: "transform 0.2s" }}>
+            <Icon name={t.icon} size={20} />
+          </div>
+          <span style={{ fontSize: 10, fontFamily: G.fontBody, fontWeight: active === t.id ? 600 : 400 }}>{t.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── APP ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user, setUser] = useState(() => storage.get("currentUser"));
+  const [screen, setScreen] = useState("dashboard");
+  const [words, setWords] = useState(() => storage.get("words") || []);
+  const [settings, setSettings] = useState(() => storage.get("settings") || { lang: "ar", daily: 5 });
+  const [todayReviewed, setTodayReviewed] = useState(() => storage.get("reviewedDate") === today());
+
+  const [showInstall, setShowInstall] = useState(false);
+
+  const saveWords = (newWords) => {
+    const updated = [...words, ...newWords];
+    setWords(updated);
+    storage.set("words", updated);
+    setScreen("dashboard");
+  };
+
+  const completeReview = () => {
+    setTodayReviewed(true);
+    storage.set("reviewedDate", today());
+    setScreen("add");
+  };
+
+  const handleLogin = (u) => {
+    setUser(u);
+    storage.set("currentUser", u);
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    storage.set("currentUser", null);
+    setScreen("dashboard");
+  };
+
+  const handleSettings = (s) => {
+    setSettings(s);
+    storage.set("settings", s);
+  };
+
+  if (!user) return (
+    <>
+      <style>{globalCSS}</style>
+      <WelcomeScreen onLogin={handleLogin} />
+    </>
+  );
+
+  return (
+    <>
+      <style>{globalCSS}</style>
+      <div style={{ maxWidth: 480, margin: "0 auto", minHeight: "100vh", position: "relative" }}>
+        {screen === "dashboard" && <Dashboard user={user} words={words} todayReviewed={todayReviewed} onNav={setScreen} onInstall={() => setShowInstall(true)} />}
+        {screen === "add" && <AddWords words={words} todayReviewed={todayReviewed} onSave={saveWords} onNav={setScreen} />}
+        {screen === "review" && <ReviewScreen words={words} onComplete={completeReview} />}
+        {screen === "history" && <HistoryScreen words={words} />}
+        {screen === "settings" && <SettingsScreen settings={settings} onSave={handleSettings} user={user} onLogout={handleLogout} />}
+        <BottomNav active={screen} onNav={setScreen} />
+        {showInstall && <InstallModal onClose={() => setShowInstall(false)} />}
+      </div>
+    </>
+  );
+}
